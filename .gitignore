@@ -1,0 +1,15 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.Python
+
+# Generated data (synthetic, reproducible via generate_data.py)
+data_out/
+
+# AWS
+.aws/
+*.pem
+
+# macOS
+.DS_Store
