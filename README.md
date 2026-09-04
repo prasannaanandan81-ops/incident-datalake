@@ -66,7 +66,7 @@ python generate_data.py
 - [x] AWS account, IAM user, CLI configured
 - [x] S3 raw/curated buckets (encrypted, versioned, public access blocked)
 - [x] Synthetic incident/problem/change data generator (Python + boto3)
-- [ ] Glue ETL job (CSV → partitioned Parquet)
+- [x] Glue ETL job (CSV → partitioned Parquet)
 - [ ] Glue Crawler + Data Catalog
 - [ ] Athena queries
 - [ ] Lambda event trigger
