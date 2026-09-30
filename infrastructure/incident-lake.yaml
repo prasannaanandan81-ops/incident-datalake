@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Incident Lake Glue, Athena, and least-privilege IAM resources.
+Parameters:
+  RawBucketName:
+    Type: String
+    Description: Existing bucket that receives CSV source data.
+  LakeBucketName:
+    Type: String
+    Description: Existing bucket containing curated/, gold/, and Athena results.
+  ArtifactBucketName:
+    Type: String
+    Description: Existing deployment-artifact bucket used by GitHub Actions.
+Resources:
+  IncidentDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput: {Name: incident_lake}
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: glue.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: IncidentLakeS3
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:GetObject', 's3:ListBucket']
+                Resource: [!Sub 'arn:aws:s3:::${RawBucketName}', !Sub 'arn:aws:s3:::${RawBucketName}/*']
+              - Effect: Allow
+                Action: ['s3:GetObject', 's3:PutObject', 's3:ListBucket']
+                Resource: [!Sub 'arn:aws:s3:::${LakeBucketName}', !Sub 'arn:aws:s3:::${LakeBucketName}/*']
+  BronzeToSilverJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: incident-bronze-to-silver
+      Role: !GetAtt GlueRole.Arn
+      Command: {Name: pythonshell, PythonVersion: '3.9', ScriptLocation: !Sub 's3://${ArtifactBucketName}/glue/bronze_to_silver.py'}
+      DefaultArguments:
+        '--additional-python-modules': pandas==2.2.3,pyarrow==17.0.0
+        '--extra-py-files': !Sub 's3://${ArtifactBucketName}/glue/glue_dependencies.zip'
+        '--RAW_BUCKET': !Ref RawBucketName
+        '--LAKE_BUCKET': !Ref LakeBucketName
+        '--job-language': python
+      MaxCapacity: 1
+  SilverToGoldJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: incident-silver-to-gold
+      Role: !GetAtt GlueRole.Arn
+      Command: {Name: pythonshell, PythonVersion: '3.9', ScriptLocation: !Sub 's3://${ArtifactBucketName}/glue/silver_to_gold.py'}
+      DefaultArguments:
+        '--additional-python-modules': pandas==2.2.3,pyarrow==17.0.0
+        '--extra-py-files': !Sub 's3://${ArtifactBucketName}/glue/glue_dependencies.zip'
+        '--LAKE_BUCKET': !Ref LakeBucketName
+        '--job-language': python
+      MaxCapacity: 1
+  GoldMetricsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref IncidentDatabase
+      TableInput:
+        Name: incident_daily_metrics
+        TableType: EXTERNAL_TABLE
+        Parameters: {classification: parquet, EXTERNAL: 'TRUE'}
+        StorageDescriptor:
+          Location: !Sub 's3://${LakeBucketName}/gold/incident_daily_metrics/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo: {SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe}
+          Columns:
+            - {Name: opened_date, Type: string}
+            - {Name: priority, Type: string}
+            - {Name: category, Type: string}
+            - {Name: assignment_group, Type: string}
+            - {Name: incident_count, Type: bigint}
+            - {Name: open_incident_count, Type: bigint}
+            - {Name: avg_resolution_hours, Type: double}
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: incident-lake
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        ResultConfiguration: {OutputLocation: !Sub 's3://${LakeBucketName}/athena-results/'}
+Outputs:
+  DatabaseName: {Value: !Ref IncidentDatabase}
+  AthenaWorkGroup: {Value: !Ref AthenaWorkGroup}

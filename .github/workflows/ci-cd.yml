@@ -1,0 +1,34 @@
+name: Incident lake CI/CD
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy: {description: Deploy infrastructure, type: boolean, default: false}
+permissions: {contents: read, id-token: write}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - run: python -m py_compile generate_data.py bronze_to_silver.py silver_to_gold.py
+  deploy:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with: {role-to-assume: '${{ vars.AWS_DEPLOY_ROLE_ARN }}', aws-region: '${{ vars.AWS_REGION }}'}
+      - run: |
+          zip -r glue_dependencies.zip src
+          aws s3 cp bronze_to_silver.py s3://${{ vars.ARTIFACT_BUCKET }}/glue/bronze_to_silver.py
+          aws s3 cp silver_to_gold.py s3://${{ vars.ARTIFACT_BUCKET }}/glue/silver_to_gold.py
+          aws s3 cp glue_dependencies.zip s3://${{ vars.ARTIFACT_BUCKET }}/glue/glue_dependencies.zip
+          aws cloudformation deploy --template-file infrastructure/incident-lake.yaml --stack-name incident-data-lake --capabilities CAPABILITY_IAM --parameter-overrides RawBucketName=${{ vars.RAW_BUCKET }} LakeBucketName=${{ vars.LAKE_BUCKET }} ArtifactBucketName=${{ vars.ARTIFACT_BUCKET }}

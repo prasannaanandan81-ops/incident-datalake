@@ -1,79 +1,40 @@
-# Incident Data Lake — Serverless AWS ETL Pipeline
+# Incident Data Lake: Bronze → Silver → Gold
 
-A small end-to-end AWS data lake project simulating an ITSM (ServiceNow-style) data pipeline:
-Incidents, Problems, and Changes flow from a raw landing zone through a serverless ETL
-transform into a query-ready analytics layer.
+A serverless ITSM analytics mini-project: generate ServiceNow-style records, land them in S3, transform them with Glue, query KPIs with Athena, and visualize them in QuickSight.
 
-## Architecture
-
-```
-Python (boto3) generator
-        │
-        ▼
-   S3 raw/  (CSV, partitioned by source)
-        │
-        ▼
-  AWS Glue ETL Job  ──►  AWS Glue Crawler  ──►  Glue Data Catalog
-        │
-        ▼
-  S3 curated/  (Parquet, partitioned by year/month/day)
-        │
-        ▼
-     Amazon Athena  (SQL queries)
-        │
-        ▼
-   Amazon QuickSight  (dashboard)
+```text
+Synthetic CSV → S3 raw (Bronze) → Glue → S3 curated (Silver Parquet) → Glue → S3 gold (KPIs) → Athena → QuickSight
+                                      ↑
+                         GitHub Actions CI/CD + CloudFormation
 ```
 
-An AWS Lambda function, triggered on new object creation in `raw/`, kicks off the Glue job
-automatically — no manual/batch scheduling step required (the cloud-native equivalent of an
-Autosys job).
+## Included
 
-## Why this pattern
+- `generate_data.py`: synthetic incidents, problems, and changes.
+- `bronze_to_silver.py`: CSV-to-date-partitioned Parquet Glue job.
+- `silver_to_gold.py`: dashboard-ready daily incident KPIs.
+- `src/transforms.py`: tested cleaning, lineage, de-duplication, and KPI aggregation.
+- `infrastructure/incident-lake.yaml`: Glue Catalog, jobs, Athena workgroup, and IAM role, using existing buckets.
+- `.github/workflows/ci-cd.yml`: tests on PR/push and an approval-gated manual deployment.
 
-This mirrors a common enterprise data lake pattern: land raw operational data (incident,
-problem, change records) in object storage, transform it into a columnar, partitioned format
-(Parquet) for efficient querying, catalog it so analytics engines can discover its schema, and
-serve it through both ad hoc SQL (Athena) and a BI dashboard (QuickSight) — without provisioning
-or managing any servers.
-
-## Stack
-
-| Layer | Service | Purpose |
-|---|---|---|
-| Ingestion | Python + boto3 | Generates synthetic ITSM data, uploads to S3 |
-| Storage (raw) | Amazon S3 | Landing zone, encrypted (SSE-S3), versioned, private |
-| Orchestration | AWS Lambda | Event-driven trigger on new file arrival |
-| Transform | AWS Glue (ETL Job + Crawler) | CSV → partitioned Parquet, schema cataloging |
-| Storage (curated) | Amazon S3 | Query-optimized Parquet, partitioned by date |
-| Query | Amazon Athena | Serverless SQL over the Glue Data Catalog |
-| Visualization | Amazon QuickSight | Dashboard for business users |
-
-## Setup
+## Validate locally
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-
-aws configure --profile incident-datalake   # region: us-east-2
-
+pytest -q
 python generate_data.py
+python bronze_to_silver.py
+python silver_to_gold.py
 ```
 
-## Project status
+The AWS profile currently returns `InvalidClientTokenId`; refresh its credentials before the S3/Glue commands.
 
-- [x] AWS account, IAM user, CLI configured
-- [x] S3 raw/curated buckets (encrypted, versioned, public access blocked)
-- [x] Synthetic incident/problem/change data generator (Python + boto3)
-- [x] Glue ETL job (CSV → partitioned Parquet)
-- [ ] Glue Crawler + Data Catalog
-- [ ] Athena queries
-- [ ] Lambda event trigger
-- [ ] QuickSight dashboard
+## Deploy with GitHub Actions
 
-## Author
+Set repository variables: `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`, `RAW_BUCKET`, `LAKE_BUCKET`, and `ARTIFACT_BUCKET`. The deploy role needs GitHub Actions OIDC trust plus CloudFormation, Glue, IAM role creation/passing, and artifact-bucket permissions. Run **Incident lake CI/CD** manually with `deploy` enabled. Protect the `production` environment if an approval is desired.
 
-Prasanna Anandan — 20+ years in L2 production support, incident/problem/change management,
-and AWS cloud data platforms. Built as a hands-on project to demonstrate serverless data
-engineering patterns end to end.
+Run the Bronze-to-Silver job, then Silver-to-Gold. In Athena, select workgroup `incident-lake` and database `incident_lake`; use [`athena/queries.sql`](athena/queries.sql). In QuickSight, create an Athena dataset from `incident_daily_metrics` and add daily incidents, open backlog by priority, and resolution time by assignment group.
+
+GitHub Actions is used because GitHub is already integrated and OIDC avoids long-lived AWS secrets. Jenkins or Spinnaker can replace its deploy stage where an organization mandates them, but should not control the same stack concurrently.
